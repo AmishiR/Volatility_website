@@ -1,0 +1,5 @@
+{
+  "name": "Volatility Forensics Hub",
+  "description": "A retro-themed cybersecurity dashboard for exploring Volatility memory forensics plugins.",
+  "requestFramePermissions": []
+}

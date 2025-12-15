@@ -40,8 +40,6 @@ export const PLUGINS: PluginDef[] = [
   { category: "Registry Analysis", name: "PrintKey", command: "windows.registry.printkey.PrintKey" },
   { category: "Registry Analysis", name: "UserAssist", command: "windows.registry.userassist.UserAssist" },
   { category: "Registry Analysis", name: "Certificates", command: "windows.registry.certificates.Certificates" },
-  { category: "Registry Analysis", name: "AmCache", command: "windows.registry.amcache.AmCache" },
-  { category: "Registry Analysis", name: "ShimCache", command: "windows.registry.shimcache.ShimCache" },
 
   // 3.3 Processes & Threads
   { category: "Process Analysis", name: "PsList", command: "windows.pslist.PsList" },
@@ -52,6 +50,7 @@ export const PLUGINS: PluginDef[] = [
 
   // 3.4 DLLs, Modules, Drivers
   { category: "DLLs & Drivers", name: "DllList", command: "windows.dlllist.DllList" },
+  { category: "DLLs & Drivers", name: "LdrModules", command: "windows.ldrmodules.LdrModules" },
   { category: "DLLs & Drivers", name: "Modules", command: "windows.modules.Modules" },
   { category: "DLLs & Drivers", name: "ModScan", command: "windows.modscan.ModScan" },
   { category: "DLLs & Drivers", name: "DriverScan", command: "windows.driverscan.DriverScan" },
@@ -121,12 +120,16 @@ export const PREDEFINED_PLUGIN_CONTENT: Record<string, string> = {
 ### Syntax
 \`vol.py -f <image> windows.cmdline.CmdLine\`
 
-### Malware Detection Focus (Triage)
-- **Primary Tool:** Essential for post-exploitation analysis.
-- **LOLBins:** Watch for misuse of legitimate binaries (\`powershell.exe\`, \`wmic.exe\`).
-- **Base64 Encoding:** Look for long, unreadable strings and flags like \`-EncodedCommand\`.
-- **Obfuscation:** Excessive or meaningless tokens designed to bypass simple detection.
-- **Action:** Immediately decode Base64 strings to reveal the true payload/C2 URL.
+### Identifying Suspicious Flags (Red Flags)
+**Common Suspicious Flags:**
+- **-NoProfile:** Tells PowerShell to skip loading user profiles to avoid detection or logging.
+- **-ExecutionPolicy Bypass:** Allows scripts to bypass the execution policy to run without restriction.
+- **-WindowStyle Hidden:** Hides the window of the PowerShell or CMD process from the user.
+
+### Example Suspicious Combination
+\`powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Invoke-WebRequest ..."\`
+
+**Analysis:** This command attempts to execute PowerShell with minimal user interaction and bypass security settings. This is typical behavior for malicious scripts like **downloaders**, **droppers**, or **webshells**.
 `,
 
   "Envars": `
@@ -203,7 +206,217 @@ export const PREDEFINED_PLUGIN_CONTENT: Record<string, string> = {
     2. **Image Load Callbacks:** Used for userland API unhooking and anti-forensics.
 `,
 
-  // --- PROCESS ANALYSIS ---
+  // --- REGISTRY ANALYSIS (Matched Images) ---
+  "HiveList": `
+# Windows.Registry.HiveList & HiveScan
+
+**Purpose:** 
+- **HiveList:** Identifies and lists the registry hives currently loaded in memory (Virtual/Physical addresses).
+- **HiveScan:** Performs a raw scan for hive structures that might not be actively linked.
+
+### Syntax
+\`vol.py -f <dump> windows.registry.hivelist\`
+\`vol.py -f <dump> windows.registry.hivescan\`
+
+![HiveList Output](/registry.hivelist.png)
+
+### The "Stealth Persistence" Test
+Rootkits may hide registry hives containing their configuration data.
+
+**High-Confidence Confirmation:** A hive found by **HiveScan** but **missing from HiveList** indicates a hidden registry-based configuration or "Registry-only" malware.
+`,
+  
+  "HiveScan": `
+# Windows.Registry.HiveList & HiveScan
+*See HiveList for details.*
+
+![HiveScan Output](/registry.hivelist.png)
+`,
+
+  "PrintKey": `
+# Windows.Registry.PrintKey
+
+**Purpose:** Displays the subkeys and values of a specific registry key without needing to extract the entire hive.
+
+### Syntax
+\`vol.py -f <dump> windows.registry.printkey --key "Software\\Microsoft\\Windows\\CurrentVersion\\Run"\`
+
+![PrintKey Output](/printkey.png)
+
+### High-Confidence Confirmation
+- **Persistence:** Checking the **Run** and **RunOnce** keys is the most common way to find malware that survives reboots.
+- **Suspicious Locations:** Look for executables running from temporary folders like \`\\AppData\\Local\\\` instead of standard paths like \`\\Program Files\\\`.
+`,
+
+  "UserAssist": `
+# Windows.Registry.UserAssist
+
+**Purpose:** Extracts and decodes (ROT13) a registry key that tracks the execution of GUI-based applications.
+
+### Syntax
+\`vol.py -f <dump> windows.registry.userassist\`
+
+### Example Output
+| Application | Run Count | Last Used |
+| :--- | :--- | :--- |
+| cmd.exe | 15 | 2025-12-14 |
+| mimikatz.exe | 1 | 2025-12-15 |
+
+### The Evidence of Execution Test
+**Timeline Reconstruction:** Even if an attacker deletes their tools, the UserAssist record often remains. Finding a credential dumper like \`mimikatz.exe\` with a "Run Count" of **1** is definitive proof of an interactive compromise.
+`,
+
+  "Certificates": `
+# Windows.Registry.Certificates
+
+**Purpose:** Lists certificates installed in the Certificate Store (Registry).
+
+### Syntax
+\`vol.py -f <dump> windows.registry.certificates.Certificates\`
+
+### The "Man-in-the-Middle" Test
+**Root Trust Poisoning:** Malware often installs a rogue **Root CA** to intercept HTTPS traffic without triggering browser warnings. Look for self-signed certificates or unknown authorities in the \`Root\` store.
+`,
+
+  // --- MEMORY & POOLS (Matched Images) ---
+  "BigPools": `
+# Windows.BigPools.BigPools
+
+**Purpose:** Scans the PoolBigPageTable for "Big Page" allocations (typically >4KB).
+
+### Syntax
+\`vol.py -f <dump> windows.bigpools.BigPools\`
+
+### The "Staging" Test
+Malware often uses big pool allocations to stage large encrypted payloads or shellcode in kernel memory.
+
+**High-Confidence Confirmation:** Look for large allocations (e.g., \`0x100000\` bytes) with suspicious or non-standard tags (like \`Leak\`, \`Frag\`, or unprintable characters).
+`,
+
+  "PoolScanner": `
+# Windows.PoolScanner.PoolScanner
+
+**Purpose:** Performs a raw scan for \`_POOL_HEADER\` structures to identify kernel objects unlinked from official system lists.
+
+### Syntax
+\`vol.py -f <dump> windows.poolscanner.PoolScanner\`
+
+### The "Zombie" Test (DKOM)
+This plugin finds "orphan" objects that \`pslist\` cannot see.
+
+**High-Confidence Confirmation:** If PoolScanner finds a process object that does not appear in \`pslist\`, it is definitive proof of **Direct Kernel Object Manipulation (DKOM)** used by rootkits to achieve invisibility.
+`,
+
+  "VadInfo": `
+# Windows.VadInfo / VadWalk / VadYaraScan
+
+**Purpose:** 
+- **VadInfo:** Lists Virtual Address Descriptors (VAD) showing memory ranges and permissions.
+- **VadWalk:** Traverses the VAD tree to verify structural integrity.
+
+### Syntax
+\`vol.py -f <dump> windows.vadinfo.VadInfo --pid <PID>\`
+
+![VadInfo Output](/vadinfo.png)
+
+### The "RWX" Test
+Legitimate applications rarely require memory that is simultaneously Writable and Executable.
+
+**High-Confidence Confirmation:** A VAD range marked as **PAGE_EXECUTE_READWRITE (RWX)** in a system process is a primary indicator of code injection or a reflective DLL.
+`,
+  "VadWalk": `
+# Windows.VadInfo / VadWalk / VadYaraScan
+*See VadInfo for full details.*
+`,
+  "VadYaraScan": `
+# Windows.VadInfo / VadWalk / VadYaraScan
+
+**Purpose:** Scans specific VAD memory ranges for YARA signatures.
+
+### Syntax
+\`vol.py -f <dump> windows.vadyarascan.VadYaraScan --yara-rules "rule_name"\`
+
+### The "Signature" Test
+The most flexible tool for finding specific malware families in RAM.
+
+**High-Confidence Confirmation:** A YARA hit on a private memory region (VAD) within a legitimate process confirms that malicious code is currently resident and active.
+`,
+
+  "Memmap": `
+# Windows.Memmap & VirtMap
+
+**Purpose:** \`Memmap\` prints the memory map. \`VirtMap\` maps the virtual address space layers.
+
+### Syntax
+\`vol.py -f <dump> windows.memmap.Memmap --pid <PID> --dump\`
+
+### How to Spot Malware
+- **Orphaned Memory:** Identify memory regions not backed by any file on disk but marked as executable.
+- **Memory Extraction:** Use \`--dump\` to extract these suspicious regions for offline analysis with \`strings\` or a debugger.
+`,
+  "VirtMap": `
+# Windows.Memmap & VirtMap
+*See Memmap for full details.*
+`,
+
+  // --- SPECIALIZED MALWARE HUNTING ---
+  "MFTScan": `
+# Windows.MFTScan.MFTScan & ADS
+
+**Purpose:** 
+- **MFTScan:** Scans for Master File Table (MFT) record objects in memory.
+- **ADS:** specifically looks for Alternate Data Streams.
+
+### Syntax
+\`vol.py -f <dump> windows.mftscan.MFTScan\`
+
+### Malware Spotting
+Threat actors often hide malicious payloads in **Alternate Data Streams** (e.g., \`legit.exe:hidden.exe\`) because standard file explorers do not show them. Finding unexpected ADSs is a high-confidence indicator of hidden tools.
+`,
+  "ADS": `
+# Windows.MFTScan.MFTScan & ADS
+*See MFTScan for full details.*
+`,
+
+  "Skeleton Key Check": `
+# Windows.Skeleton_Key_Check
+
+**Purpose:** Specifically looks for signs of the "Skeleton Key" malware, which backdoors Active Directory domain controllers.
+
+### Syntax
+\`vol.py -f <dump> windows.skeleton_key_check.SkeletonKeyCheck\`
+
+### High-Confidence Confirmation
+The plugin checks for specific hooks in the \`lsass.exe\` process. Any positive result means the entire domain’s authentication has been compromised.
+`,
+
+  "YaraScan": `
+# Windows.YaraScan.YaraScan
+
+**Purpose:** Scans the entire memory image (process or kernel space) for patterns defined in YARA rules.
+
+### Syntax
+\`vol.py -f <dump> windows.yarascan.YaraScan --yara-rules "rule_name"\`
+
+### The "Signature" Test
+This is the most flexible tool for finding specific malware families in RAM.
+
+**High-Confidence Confirmation:** A YARA hit on a private memory region (VAD) within a legitimate process confirms that malicious code is currently resident and active in that process.
+`,
+
+  "TrueCrypt Passphrase": `
+# Windows.TrueCrypt.Passphrase
+
+**Purpose:** Attempts to find cached TrueCrypt or VeraCrypt passphrases within the kernel module's memory.
+
+### Syntax
+\`vol.py -f <dump> windows.truecrypt.Passphrase\`
+
+### Malware Spotting
+If an attacker has encrypted their exfiltrated data or local tools, this plugin may recover the key needed to decrypt the evidence.
+`,
+
+  // --- PROCESS ANALYSIS (Matched Images) ---
   "PsList": `
 # Windows.PsList.PsList (The Official View)
 
@@ -212,6 +425,8 @@ export const PREDEFINED_PLUGIN_CONTENT: Record<string, string> = {
 ### Syntax
 \`vol.py -f <dump> windows.pslist\`
 
+![PsList Output](/pslist.png)
+
 ### The Baseline Test
 Used to establish the known-good state. It's the fastest way to spot simple "typo-squatting" (e.g., \`scvhost.exe\` instead of \`svchost.exe\`). Any process missing from this list is considered hidden.
 `,
@@ -219,37 +434,41 @@ Used to establish the known-good state. It's the fastest way to spot simple "typ
   "PsScan": `
 # Windows.PsScan.PsScan (The Deep Scan)
 
-**Purpose:** Scans the raw kernel memory for \`EPROCESS\` objects using specific pool tags. It does not rely on the official OS list.
+**Purpose:** Scans the raw kernel memory for \`EPROCESS\` objects using specific pool tags.
 
 ### Syntax
 \`vol.py -f <dump> windows.psscan\`
 
+![PsScan Output](/psscan.png)
+
 ### High-Confidence Confirmation (The "Invisible Man" Test)
-**DKOM (Direct Kernel Object Manipulation):** A process that appears in \`psscan\` but is **MISSING** from \`pslist\` is a definitive indicator of a rootkit. The malware is physically in memory but has "cut the rope" (unlinked itself) from the official list to achieve invisibility.
+**DKOM:** A process that appears in \`psscan\` but is **MISSING** from \`pslist\` is a definitive indicator of a rootkit. The malware is physically in memory but has "cut the rope" (unlinked itself) from the official list.
 `,
 
   "PsTree": `
 # Windows.PsTree.PsTree (The Family Tree)
 
-**Purpose:** Formats the process list into a parent-child hierarchy based on the Process ID (PID) and Parent Process ID (PPID).
+**Purpose:** Formats the process list into a parent-child hierarchy based on PID and PPID.
 
 ### Syntax
 \`vol.py -f <dump> windows.pstree\`
 
-### High-Confidence Confirmation (The Orphan Test / PPID Spoofing)
-Look for illogical parent-child relationships. If a web browser (\`chrome.exe\`) is spawned by a critical system process like \`lsass.exe\` (which should never happen), it confirms **PPID Spoofing**—malicious exploit behavior designed to hide the origin of the payload.
+![PsTree Output](/pstree.png)
+
+### High-Confidence Confirmation (PPID Spoofing)
+Look for illogical parent-child relationships. If a web browser (\`chrome.exe\`) is spawned by a critical system process like \`lsass.exe\` (which should never happen), it confirms **PPID Spoofing**—malicious exploit behavior.
 `,
 
   "ThrdScan": `
 # Windows.ThrdScan.ThrdScan (The Pulse Check)
 
-**Purpose:** Scans memory for \`ETHREAD\` structures. Since every process must have at least one thread to execute code, this finds the "heartbeat" of active code.
+**Purpose:** Scans memory for \`ETHREAD\` structures. Finds the "heartbeat" of active code.
 
 ### Syntax
 \`vol.py -f <dump> windows.thrdscan\`
 
-### High-Confidence Confirmation (Process Hollowing Test)
-**Ghost Processes:** If \`thrdscan\` finds threads belonging to a PID that is **MISSING** from both \`pslist\` and \`psscan\`, you have found a "ghost" process. This is often the result of **Process Hollowing**, where an attacker injects code into a legitimate process's memory space and executes it via a new thread.
+### High-Confidence Confirmation (Process Hollowing)
+**Ghost Processes:** If \`thrdscan\` finds threads belonging to a PID that is **MISSING** from both \`pslist\` and \`psscan\`, you have found a "ghost" process. This is often the result of **Process Hollowing**.
 `,
 
   "Sessions": `
@@ -260,74 +479,212 @@ Look for illogical parent-child relationships. If a web browser (\`chrome.exe\`)
 ### Syntax
 \`vol.py -f <dump> windows.sessions\`
 
-### High-Confidence Confirmation (Lateral Movement Test)
-**Rogue Remote Session:** Look for a new session (e.g., Session 2) created from a remote IP address that is running a command shell (\`cmd.exe\` or \`powershell.exe\`). This is definitive proof of an attacker successfully logging in via RDP or WinRM and actively moving laterally within the network.
+### High-Confidence Confirmation (Lateral Movement)
+**Rogue Remote Session:** Look for a new session (e.g., Session 2) created from a remote IP address that is running a command shell (\`cmd.exe\` or \`powershell.exe\`). This is definitive proof of an attacker successfully logging in via RDP or WinRM.
 `,
 
-  "Malfind": "# Windows.Malfind\n\nFinds hidden or injected code/DLLs in user mode memory. It scans for VAD tags that have `PAGE_EXECUTE_READWRITE` protection.\n\n### Usage\n`vol -f mem.raw windows.malfind`\n\n### Analysis Tips\nLook for memory sections that are executable but not backed by a file on disk.",
-  
+  // --- MALWARE & MODULES (Matched Images) ---
+  "Malfind": `
+# Windows.Malfind.Malfind
+
+**Purpose:** Detects memory regions with signs of code injection (like VAD tags with RWX permissions).
+
+### Syntax
+\`vol.py -f <dump> windows.malfind\`
+
+![Malfind Output](/malfind.png)
+
+### The "MZ" Anomaly (Analysis Tip)
+To quickly identify injected PE files (Executables/DLLs), pipe the output to grep:
+\`vol.py -f <dump> windows.malfind | grep -C 5 'MZ'\`
+
+### The Permissions Test (RWX)
+**PAGE_EXECUTE_READWRITE:** In memory, only code sections should be executable, while data should be Read/Write. If a region is **Writable AND Executable**, it suggests code injection or self-modifying code.
+
+### Troubleshooting (Offline/MobaXterm)
+**Symbol Tables:** If you see errors regarding symbols, Volatility 3 cannot download the required JSON files due to lack of internet. Unlike Volatility 2, Vol 3 **requires** these symbols to resolve kernel structures.
+`,
+
+  "LdrModules": `
+# Windows.LdrModules.LdrModules
+
+**Purpose:** Detects unlinked or hidden DLLs by comparing the three internal lists the Windows Loader uses to track modules.
+
+### Syntax
+\`vol.py -f <dump> windows.ldrmodules\`
+
+![LdrModules Output](/ldrmodules.png)
+
+### The Unlinked DLL Test
+Volatility checks three lists:
+1. **InLoadOrder**
+2. **InInitOrder**
+3. **InMemOrder**
+
+**Suspicious:** If a module shows:
+- **InLoadOrder:** False
+- **InInitOrder:** False
+- **InMemOrder:** True
+
+This means the DLL is present in memory but has been **unlinked** from the official lists to hide from standard monitoring tools.
+
+### Forensic Workflow
+1. **Identify:** Find PID with unlinked modules.
+2. **Dump:** \`vol.py -f <dump> -o dump/ windows.dlldump --pid <PID>\`
+3. **Verify:** Calculate hash (\`md5sum <file>\`) and submit to VirusTotal.
+`,
+  "DllList": `
+# Windows.DllList.DllList
+
+**Purpose:** Lists loaded modules for a specific process.
+
+### Syntax
+\`vol.py -f <dump> windows.dlllist --pid <PID>\`
+
+![DllList Output](/dlllist.png)
+
+### Analysis
+Use this to cross-reference with **LdrModules**. If a DLL appears here, it is "officially" recognized. If it is missing here but found in memory scans, it is suspicious.
+`,
+
+  // --- KERNEL & DRIVERS (Matched Images) ---
+  "Modules": `
+# Windows.Modules.Modules
+
+**Purpose:** Lists loaded kernel modules (drivers, .sys files) utilizing the standard doubly-linked list.
+
+### Syntax
+\`vol.py -f <dump> windows.modules.Modules\`
+
+![Modules Output](/modules.png)
+
+### Analysis
+The "Official" list of loaded drivers. Compare this against **ModScan** or **DriverScan** to find hidden rootkits.
+`,
+
+  "ModScan": `
+# Windows.ModScan.ModScan
+
+**Purpose:** Scans kernel memory pools for \`_LDR_DATA_TABLE_ENTRY\` structures (Kernel Modules).
+
+### Syntax
+\`vol.py -f <dump> windows.modscan.ModScan\`
+
+### The "Hidden Driver" Test
+**DKOM:** If a driver appears in **ModScan** but is missing from **Modules**, it has unlinked itself to hide. This is standard behavior for kernel-mode rootkits.
+`,
+
+  "DriverScan": `
+# Windows.DriverScan.DriverScan
+
+**Purpose:** Scans memory for \`_DRIVER_OBJECT\` structures.
+
+### Syntax
+\`vol.py -f <dump> windows.driverscan.DriverScan\`
+
+### Malware Triage
+**Unbacked Code:** Look for driver objects that do not map to a file on disk or have invalid names. This suggests a driver was loaded directly from memory (Reflective Loading).
+`,
+
+  "DriverIrp": `
+# Windows.DriverIrp.DriverIrp
+
+**Purpose:** Checks the I/O Request Packet (IRP) function tables for drivers.
+
+### Syntax
+\`vol.py -f <dump> windows.driverirp.DriverIrp\`
+
+### The "IRP Hooking" Test
+**Rootkit Detection:** Drivers process system requests via IRP handlers. Rootkits hook these handlers to intercept data (e.g., keyloggers hooking the Keyboard Driver).
+- **Red Flag:** An IRP function pointing to a memory address outside the legitimate driver's module range.
+`,
+
+  "DriverModule": `
+# Windows.DriverModule.DriverModule
+
+**Purpose:** Associates driver objects with their corresponding kernel modules.
+
+### Syntax
+\`vol.py -f <dump> windows.drivermodule.DriverModule\`
+
+### Analysis
+Helps attribute a specific suspicious driver object found in \`DriverScan\` to the specific \`.sys\` file (or lack thereof) responsible for it.
+`,
+
+  // --- PE & CODE ANALYSIS ---
+  "IAT": `
+# Windows.IAT.IAT (Import Address Table)
+
+**Purpose:** Scans the Import Address Table of a process to detect hooking.
+
+### Syntax
+\`vol.py -f <dump> windows.iat.IAT --pid <PID>\`
+
+### The "API Hooking" Test
+**Userland Rootkits:** Malware modifies the IAT to redirect API calls (like \`WriteFile\` or \`ConnectSocket\`) to malicious code.
+- **Detection:** Volatility checks if the IAT pointers resolve to the correct system DLLs or if they point to private/unknown memory regions.
+`,
+
+  "VerInfo": `
+# Windows.VerInfo.VerInfo
+
+**Purpose:** Extracts Version Information resources from PE files in memory.
+
+### Syntax
+\`vol.py -f <dump> windows.verinfo.VerInfo\`
+
+### The "Masquerading" Test
+**Fake System Files:** An attacker may name their malware \`svchost.exe\`. Use \`VerInfo\` to check the internal metadata (Company Name, Product Version).
+- **Mismatch:** A file named \`svchost.exe\` but with "Company Name: RandomHacker" or missing a Microsoft digital signature block is confirmed malware.
+`,
+
   // --- NETWORK ANALYSIS ---
   "NetScan": `
 # Windows.NetScan.NetScan
 
-**Purpose:** Scans for network connections and sockets.
+**Purpose:** Scans for network connections and sockets using Pool Scanning.
 
 ### Syntax
 \`vol.py -f <dump> windows.netscan\`
 
-### Technical Advantage: Pool Scanning
-This plugin **bypasses malware stealth** by not querying the kernel's easily-hooked network lists. Instead, it performs a deep scan of the entire kernel memory pools (specifically looking for \`_TCP_ENDPOINT\` and \`_UDP_ENDPOINT\` structures).
+### Technical Advantage
+Bypasses malware stealth by scanning kernel pools for \`_TCP_ENDPOINT\` structures rather than linked lists.
 
-### Result
-It finds "unlinked" or covert socket objects that rootkits leave behind, making it the most reliable method for discovering hidden C2 communication.
-
-### Malware Triage (Correlation)
-1. **State:** Look for connections in the **ESTABLISHED** state (active beaconing).
-2. **Foreign Endpoint:** Triage the \`ForeignAddr\` and \`ForeignPort\`. Look for non-standard ports (4444, 4342) or known malicious IPs.
-3. **Crucial Pivot:** Note the **PID**. This is the critical step to confirm the process context of the suspicious connection.
+### Malware Triage
+1. **State:** Look for **ESTABLISHED** connections.
+2. **Pivot:** Note the **PID** to confirm the process context.
 `,
 
   "NetStat": `
 # Windows.NetStat.NetStat
 
-**Purpose:** Verifies the integrity of standard network tracking structures.
+**Purpose:** Verifies standard network tracking structures.
 
 ### Syntax
 \`vol.py -f <dump> windows.netstat\`
 
 ### The Contradiction Test
-While \`netscan\` performs a deep memory sweep (Pool Scanning), \`netstat\` checks the official OS lists. Comparing them is key.
-
-### High-Confidence Confirmation
-**Rootkit Compromise:** A malicious connection will appear in the **NetScan** output but will be **ABSENT** or corrupted in the **NetStat** output.
-
-**Conclusion:** This contradiction is definitive proof of a kernel-level anti-forensic maneuver. The rootkit successfully unlinked the socket to achieve invisibility, but the raw memory object remains, confirming Ring 0 compromise.
+**Rootkit Compromise:** A malicious connection present in **NetScan** but **ABSENT** in **NetStat** confirms kernel-level anti-forensics.
 `,
 
   "Methodology": `
 # Integrated Forensic Methodology
 ## The Full Confirmation Chain
 
-The highest confidence in a finding is achieved when plugins align to show the full attack chain.
-
 ### 1. Discovery (NetScan)
-**Action:** Identify an **ESTABLISHED** C2 connection.
-**Key Artifact:** The suspicious **PID** associated with the socket.
+**Action:** Identify an **ESTABLISHED** C2 connection and PID.
 
 ### 2. Stealth Validation (The Contradiction)
 **Action:** Run \`windows.netstat\`.
-**Check:** Is the connection **Missing**?
-**Result:** If missing in Netstat but present in Netscan, this confirms **Kernel-Level Anti-Forensics**.
+**Check:** Is the connection **Missing**? (Confirms Rootkit).
 
 ### 3. Context Attribution (CmdLine)
 **Action:** Run \`windows.cmdline\`.
-**Check:** Did the PID launch with suspicious flags (e.g., \`-EncodedCommand\`) or from a temp path?
+**Check:** Suspicious flags or temp paths?
 
 ### 4. Final Confirmation (Malfind)
 **Action:** Run \`windows.malfind\` on the PID.
-**Result:** The PID confirmed to host the C2 connection (Netscan) is the same process containing the injected payload (Malfind). 
-
-**Verdict:** Irrefutable evidence of a fileless or injected C2 channel.
+**Result:** PID hosting C2 also contains injected payload (RWX memory).
 `,
 
   // --- FILE SYSTEM ---
@@ -339,10 +696,9 @@ The highest confidence in a finding is achieved when plugins align to show the f
 ### Syntax
 \`vol.py -f <dump> windows.filescan\`
 
-### Malware Triage (Confirmation)
-- **Anomalous Paths:** Look for file object paths pointing to non-standard executable locations, such as temporary directories (\`%TEMP%\`) or user profile subdirectories.
-- **Unlinked File Objects:** Files executed and immediately deleted will often appear here as objects without an existing disk reference. This provides the **only proof** that the file was ever executed.
-- **Crucial Output:** This plugin yields the memory **Offset** of the file object, which is required for extraction via \`dumpfiles\`.
+### Malware Triage
+- **Unlinked File Objects:** Files executed and deleted will appear here as objects without a disk reference. This is often the **only proof** of execution.
+- **Offset:** Yields the memory address needed for \`dumpfiles\`.
 `,
 
   "DumpFiles": `
@@ -350,16 +706,11 @@ The highest confidence in a finding is achieved when plugins align to show the f
 
 **Purpose:** Extracts binary files (EXE/DLL) from memory to disk for analysis.
 
-### Syntax (Extracting File Object)
+### Syntax
 \`vol.py -f <dump> -o <output_dir> windows.dumpfiles --virtaddr <Offset>\`
-*(Use the Offset obtained from windows.filescan)*
-
-### Syntax (Extracting Process Image)
-\`vol.py -f <dump> -o <output_dir> windows.dumpfiles --pid <PID>\`
 
 ### High-Confidence Attribution
-- **Evidence:** The output is a raw binary file.
-- **Next Steps:** The extracted payload is the core evidence needed for **Signature Verification** against YARA rulesets and in-depth **Static Analysis** (strings, disassembly) to confirm family attribution (e.g., Meterpreter, Ransomware).
+The extracted payload is the core evidence needed for **Signature Verification** against YARA rulesets and in-depth **Static Analysis** (strings, disassembly) to confirm family attribution (e.g., Meterpreter, Ransomware).
 `,
 
   "Strings": `
@@ -370,7 +721,7 @@ The highest confidence in a finding is achieved when plugins align to show the f
 ### Syntax
 \`vol.py -f <dump> windows.strings\`
 
-### Malware Triage (Operational Intent)
+### Malware Triage
 - **C2 Parameters:** Reveals hardcoded C2 IP addresses, domain names, base URLs, or unique HTTP user-agent strings.
 - **Execution Artifacts:** Exposes internal malware commands (e.g., \`GET /beacon.php?id=\`), mutex names, or internal file paths used during decryption routines.
 - **Decrypted Data:** Can capture plaintext configuration blocks, ransomware file extension lists, or registry keys that were only decrypted in memory.
@@ -384,9 +735,8 @@ The highest confidence in a finding is achieved when plugins align to show the f
 ### Syntax
 \`vol.py -f <dump> windows.symlinkscan\`
 
-### Malware Triage (Advanced Stealth)
-- **Persistence via Redirection:** A malicious link can redirect a legitimate system path (\`LinkName\`) to a location controlled by the malware (\`TargetName\`), effectively tricking the OS into executing a malicious file.
-- **High-Confidence Finding:** The presence of a symbolic link pointing to a suspicious or non-canonical directory confirms a persistence mechanism that actively masks the malware’s true location or identity.
+### Malware Triage
+**Persistence via Redirection:** A malicious link can redirect a legitimate system path (\`LinkName\`) to a location controlled by the malware (\`TargetName\`), effectively tricking the OS into executing a malicious file.
 `,
 
   // --- CREDENTIALS & PRIVILEGES ---
@@ -398,7 +748,7 @@ The highest confidence in a finding is achieved when plugins align to show the f
 ### Syntax
 \`vol.py -f <dump> windows.hashdump\`
 
-### The Persistence Test
+### Persistence Test
 - **Shadow Accounts:** Seeing a user (e.g., \`Support_Acc\`) that is not in the official user directory confirms an attacker-created backdoor account.
 - **Hash Extraction:** A "Live" hash for a user who hasn't logged in recently indicates a **Pass-the-Hash** attack or a persistence mechanism.
 `,
@@ -411,8 +761,8 @@ The highest confidence in a finding is achieved when plugins align to show the f
 ### Syntax
 \`vol.py -f <dump> windows.cachedump\`
 
-### The Lateral Movement Test
-- **High-Confidence Confirmation:** If the cache contains credentials for a **Domain Admin** found on a low-privilege workstation, it is a high-priority indicator of lateral movement and privilege escalation targeting these caches (often via tools like Mimikatz).
+### Lateral Movement Test
+Finding **Domain Admin** credentials on a low-privilege workstation is a high-priority indicator of lateral movement targeting caches.
 `,
 
   "Lsadump": `
@@ -424,7 +774,7 @@ The highest confidence in a finding is achieved when plugins align to show the f
 \`vol.py -f <dump> windows.lsadump\`
 
 ### The "Crown Jewels" Test
-- **Plaintext Exposure:** Finding a populated \`DefaultPassword\` field is definitive proof of poor security hygiene or a specialized configuration that malware abuses to maintain access after a reboot.
+**Plaintext Exposure:** Finding a populated \`DefaultPassword\` field is definitive proof of poor security hygiene or a specialized configuration that malware abuses to maintain access after a reboot.
 `,
 
   "GetSIDs": `
@@ -435,9 +785,16 @@ The highest confidence in a finding is achieved when plugins align to show the f
 ### Syntax
 \`vol.py -f <dump> windows.getsids\`
 
-### The Impersonation Test
-- **Standard:** System processes (\`svchost.exe\`, \`lsass.exe\`) must run under system SIDs (e.g., \`S-1-5-18\` for LocalSystem).
-- **User-Land Injection:** If a critical system process (e.g., \`svchost.exe\` or \`lsass.exe\`) is shown as being owned by a standard user SID (e.g., \`S-1-5-21...-1001\`), the process has likely been hollowed or injected by malware to masquerade as a system service.
+### How It Works
+SIDs are unique identifiers for users, groups, or security principals. Each process is associated with a SID. This plugin allows you to verify if processes are executing under the **correct** or **expected** user accounts.
+
+### Commonly Suspicious Indicators
+1.  **Unexpected SID Changes:** A process changing its SID over time is a sign of **Privilege Escalation**.
+2.  **Mismatch of User and Process:** If a critical system process (e.g., \`lsass.exe\`) is running under a standard user SID (e.g., \`S-1-5-21...\`) instead of System, it is a high-confidence indicator of **Process Hollowing** or malicious activity.
+3.  **Unauthorized SIDs:** Any process running with a SID that doesn't belong to a known user should be flagged.
+
+### How to Investigate Further
+Once identified, check the **Process Hierarchy** (\`pstree\`). Often, malicious processes with strange SIDs are launched by legitimate processes (e.g., a Browser spawning a System-level shell).
 `,
 
   "Privileges": `
@@ -449,7 +806,6 @@ The highest confidence in a finding is achieved when plugins align to show the f
 \`vol.py -f <dump> windows.privileges\`
 
 ### The Escalation Test
-- **Standard:** Standard applications (like Notepad) should only have basic privileges.
-- **Privilege Escalation (Smoking Gun):** A non-system process showing \`SeDebugPrivilege\` or \`SeLoadDriverPrivilege\` as **Enabled** is a definitive indicator. The malware has successfully bypassed UAC or exploited a vulnerability to gain the rights needed to inject code into other processes or install a rootkit.
+**Smoking Gun:** A non-system process showing \`SeDebugPrivilege\` or \`SeLoadDriverPrivilege\` as **Enabled** is a definitive indicator. The malware has successfully bypassed UAC or exploited a vulnerability to gain the rights needed to inject code into other processes or install a rootkit.
 `
 };

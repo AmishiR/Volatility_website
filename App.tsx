@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Terminal, ShieldAlert, Cpu, Network, FileCode, Activity, HardDrive, Database, Key, Layers, GitMerge } from 'lucide-react'; // Added GitMerge icon
+import { Terminal, ShieldAlert, Cpu, Network, FileCode, Activity, HardDrive, Database, Key, Layers, GitMerge } from 'lucide-react'; 
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -66,7 +66,7 @@ const App: React.FC = () => {
     loadContentWithEffect(explanation);
   };
 
-  // NEW: Handler for the Methodology Button
+  // Handler for the Methodology Button
   const handleMethodologyClick = () => {
     setLoadingContent(true);
     setContent('');
@@ -191,7 +191,20 @@ const App: React.FC = () => {
                             h1: ({node, ...props}) => <h1 className="text-2xl font-bold border-b border-[#33ff33] pb-2 mb-4 uppercase text-white" {...props} />,
                             h2: ({node, ...props}) => <h2 className="text-lg font-bold mt-6 mb-2 text-[#ffff00] flex items-center gap-2" {...props}><span className="text-[#33ff33]">{'>'}</span> {props.children}</h2>,
                             strong: ({node, ...props}) => <strong className="text-[#fff] bg-[#003300] px-1" {...props} />,
-                            code: ({node, ...props}) => <code className="font-mono text-xs md:text-sm bg-[#111] border border-[#333] px-1 py-0.5 rounded text-[#fa0]" {...props} />
+                            code: ({node, ...props}) => <code className="font-mono text-xs md:text-sm bg-[#111] border border-[#333] px-1 py-0.5 rounded text-[#fa0]" {...props} />,
+                            img: ({node, ...props}) => (
+                              <div className="my-6 border border-[#33ff33] bg-black p-1 relative group">
+                                <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%] bg-repeat pointer-events-none z-10 opacity-30"></div>
+                                <img 
+                                  {...props} 
+                                  className="w-full h-auto opacity-90 grayscale-[20%] group-hover:grayscale-0 transition-all duration-300"
+                                />
+                                <div className="border-t border-[#33ff33] mt-1 pt-1 flex justify-between text-[10px] text-[#33ff33] tracking-widest opacity-70 font-mono uppercase">
+                                  <span>FIG_REF: {props.alt?.substring(0, 10) || 'UNKNOWN'}</span>
+                                  <span>CAPTURE_MODE: RAW</span>
+                                </div>
+                              </div>
+                            )
                           }}
                         >
                           {content}
@@ -223,21 +236,26 @@ const App: React.FC = () => {
                   
                   {/* --- ACTION PANEL --- */}
                   <div className="col-span-4 flex flex-col gap-2">
-                     <div className="flex-1 bg-[#001100] border border-[#33ff33] p-2 flex flex-col justify-center gap-2">
+                     <div className="flex-1 bg-[#001100] border border-[#33ff33] p-2 flex flex-col justify-center">
                         
-                        {/* CONDITIONAL METHODOLOGY BUTTON */}
+                        {/* SINGLE BUTTON LOGIC: Show Methodology if applicable, else show Link */}
                         {selectedPlugin && (selectedPlugin.name === 'NetScan' || selectedPlugin.name === 'NetStat') ? (
                           <RetroButton 
                             label="METHODOLOGY" 
                             subLabel="CONFIRMATION CHAIN" 
                             onClick={handleMethodologyClick}
-                            className="flex-1 animate-pulse border-[#ffff00]" // Highlighted Button
+                            className="h-full animate-pulse border-[#ffff00]" // Highlighted Button
                           />
                         ) : (
-                          <RetroButton label="CHEAT SHEET" subLabel="Export PDF" onClick={() => {}} />
+                          <RetroButton 
+                            label="SOURCE" 
+                            subLabel="Volatility 3 Repo" 
+                            variant="danger" 
+                            onClick={() => window.open('https://github.com/volatilityfoundation/volatility3', '_blank')}
+                            className="h-full"
+                          />
                         )}
 
-                        <RetroButton label="COMMANDS" subLabel="Copy All" variant="success" onClick={() => {}} />
                      </div>
                   </div>
                 </div>
